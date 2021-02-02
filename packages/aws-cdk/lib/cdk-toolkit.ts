@@ -127,7 +127,7 @@ export class CdkToolkit {
       }
     }
 
-    const stackOutputs: { [key: string]: any } = { };
+    const stackOutputs: { [key: string]: any } = {};
     const outputsFile = options.outputsFile;
 
     for (const stack of stacks.stackArtifacts) {
@@ -191,6 +191,7 @@ export class CdkToolkit {
           usePreviousParameters: options.usePreviousParameters,
           progress: options.progress,
           ci: options.ci,
+          shortcut: options.shortcut,
         });
 
         const message = result.noOp
@@ -262,7 +263,7 @@ export class CdkToolkit {
     }
   }
 
-  public async list(selectors: string[], options: { long?: boolean } = { }) {
+  public async list(selectors: string[], options: { long?: boolean } = {}) {
     const stacks = await this.selectStacksForList(selectors);
 
     // if we are in "long" mode, emit the array as-is (JSON/YAML)
@@ -595,6 +596,13 @@ export interface DeployOptions {
    * @default false
    */
   readonly ci?: boolean;
+
+  /**
+   * If true, shortcut deploy Lambda functions if that's all that has changed.
+   *
+   * @default false
+   */
+  shortcut?: boolean;
 }
 
 export interface DestroyOptions {

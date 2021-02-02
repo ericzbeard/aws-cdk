@@ -9,7 +9,7 @@ import { ToolkitInfo } from './toolkit-info';
 import { CloudFormationStack, Template } from './util/cloudformation';
 import { StackActivityProgress } from './util/cloudformation/stack-activity-monitor';
 
-export interface DeployStackOptions {
+export interface DeployCloudFormationStackOptions {
   /**
    * Stack to deploy
    */
@@ -104,6 +104,13 @@ export interface DeployStackOptions {
    * @default false
    */
   readonly ci?: boolean;
+
+  /**
+   * If true, shortcut deploy Lambda functions if that's all that has changed.
+   *
+   * @default false
+   */
+  shortcut?: boolean;
 }
 
 export interface DestroyStackOptions {
@@ -145,7 +152,7 @@ export class CloudFormationDeployments {
     return stack.template();
   }
 
-  public async deployStack(options: DeployStackOptions): Promise<DeployStackResult> {
+  public async deployStack(options: DeployCloudFormationStackOptions): Promise<DeployStackResult> {
     const { stackSdk, resolvedEnvironment, cloudFormationRoleArn } = await this.prepareSdkFor(options.stack, options.roleArn);
 
     const toolkitInfo = await ToolkitInfo.lookup(resolvedEnvironment, stackSdk, options.toolkitStackName);
@@ -178,6 +185,7 @@ export class CloudFormationDeployments {
       usePreviousParameters: options.usePreviousParameters,
       progress: options.progress,
       ci: options.ci,
+      shortcut: options.shortcut,
     });
   }
 
@@ -237,7 +245,7 @@ export class CloudFormationDeployments {
   /**
    * Replace the {ACCOUNT} and {REGION} placeholders in all strings found in a complex object.
    */
-  private async replaceEnvPlaceholders<A extends { }>(object: A, env: cxapi.Environment): Promise<A> {
+  private async replaceEnvPlaceholders<A extends {}>(object: A, env: cxapi.Environment): Promise<A> {
     return cxapi.EnvironmentPlaceholders.replaceAsync(object, {
       accountId: () => Promise.resolve(env.account),
       region: () => Promise.resolve(env.region),

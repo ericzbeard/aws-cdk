@@ -1,7 +1,7 @@
 import * as cxschema from '@aws-cdk/cloud-assembly-schema';
 import * as cxapi from '@aws-cdk/cx-api';
 import { Bootstrapper } from '../lib/api/bootstrap';
-import { CloudFormationDeployments, DeployStackOptions } from '../lib/api/cloudformation-deployments';
+import { CloudFormationDeployments, DeployCloudFormationStackOptions } from '../lib/api/cloudformation-deployments';
 import { DeployStackResult } from '../lib/api/deploy-stack';
 import { Template } from '../lib/api/util/cloudformation';
 import { CdkToolkit, Tag } from '../lib/cdk-toolkit';
@@ -201,7 +201,7 @@ class FakeCloudFormation extends CloudFormationDeployments {
     }
   }
 
-  public deployStack(options: DeployStackOptions): Promise<DeployStackResult> {
+  public deployStack(options: DeployCloudFormationStackOptions): Promise<DeployStackResult> {
     expect([MockStack.MOCK_STACK_A.stackName, MockStack.MOCK_STACK_B.stackName])
       .toContain(options.stack.stackName);
     expect(options.tags).toEqual(this.expectedTags[options.stack.stackName]);
