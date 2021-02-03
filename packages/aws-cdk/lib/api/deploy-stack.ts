@@ -248,48 +248,46 @@ export async function deployStack(options: DeployStackOptions): Promise<DeploySt
 
       print('Directly updating modified Lambda functions, skipping CloudFormation deployment');
 
-      // Assets need to be published first, no sense in re-writing all of that code
-      await publishAssets(legacyAssets.toManifest(stackArtifact.assembly.directory), options.sdkProvider, stackEnv);
+      // Create a filter list so we only publish the changed lambda assets
+      const filterIds: string[] = [];
+      for (const assetPath in skipDeployResult.modifiedAssetPaths) {
+        filterIds.push(assetPath.replace('asset.', ''));
+      }
 
-      // TODO - The above should be constrained to only publish the changed Lambda functions
+      // Publish the assets so we can refer to the latest Lambda code in the S3 bucket
+      await publishAssets(
+        legacyAssets.toManifest(stackArtifact.assembly.directory),
+        options.sdkProvider,
+        stackEnv,
+        filterIds);
 
       // Iterate over each changed Lambda function
       for (const assetPath in skipDeployResult.modifiedAssetPaths) {
-        // Find the local copy of the asset
+
         debug(`SHORTCUT: assetPath ${assetPath}`);
 
-        // Get the name of the bucket and the object key
+        // Get the name of the bucket, object key, and function
         let s3Bucket = '';
         let s3Key = '';
         const logicalFunctionName = skipDeployResult.modifiedAssetPaths[assetPath];
 
+        // Iterate over all stack parameters to find the ones related to this asset
         for (const [k, v] of Object.entries(stackParams.values)) {
           debug(`SHORTCUT: Parameter key: ${k}, value: ${v}`);
-          if (k.indexOf(assetPath.replace('asset.', '')) > -1) {
-            debug('SHORTCUT: Match');
 
-            // SHORTCUT: Parameter
-            //   key: AssetParametersb1483be19c1ff89c56d116484a3a1fdc02f3ffd4c280d1c67ececfe422f00de0S3BucketB9B10393,
-            //   value: cdk-hnb659fds-assets-916662284357-us-east-1
-            // SHORTCUT: Match
-            // SHORTCUT: Parameter
-            //   key: AssetParametersb1483be19c1ff89c56d116484a3a1fdc02f3ffd4c280d1c67ececfe422f00de0S3VersionKey55DB915E,
-            //   value: assets/||b1483be19c1ff89c56d116484a3a1fdc02f3ffd4c280d1c67ececfe422f00de0.zip
-            // SHORTCUT: Match
-            // SHORTCUT: Parameter
-            //   key: AssetParametersb1483be19c1ff89c56d116484a3a1fdc02f3ffd4c280d1c67ececfe422f00de0ArtifactHash62D1C1D3,
-            //   value: b1483be19c1ff89c56d116484a3a1fdc02f3ffd4c280d1c67ececfe422f00de0
-            // SHORTCUT: Match
+          // Look for a matching asset path
+          if (k.indexOf(assetPath.replace('asset.', '')) > -1) {
+            debug('SHORTCUT: Matched asset path');
 
             if (k.indexOf('S3Bucket') > -1) {
               s3Bucket = v;
             }
 
+            // Remove the delimiter from the object key
             if (k.indexOf('S3VersionKey') > -1) {
               s3Key = v.replace('||', '');
             }
           }
-
         }
 
         // Get the physical name of the function
@@ -298,7 +296,6 @@ export async function deployStack(options: DeployStackOptions): Promise<DeploySt
 
         // Update the lambda function code
         await shortcutLambdaFunction(functionName!, s3Bucket, s3Key, stackEnv, options.sdkProvider);
-
       }
 
       return {
