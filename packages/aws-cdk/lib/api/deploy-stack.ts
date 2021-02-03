@@ -7,7 +7,7 @@ import { Tag } from '../cdk-toolkit';
 import { debug, error, print } from '../logging';
 import { toYAML } from '../serialize';
 import { AssetManifestBuilder } from '../util/asset-manifest-builder';
-import { publishAssets } from '../util/asset-publishing';
+import { publishAssets, shortcutLambdaFunction, getFunctionName } from '../util/asset-publishing';
 import { contentHash } from '../util/content-hash';
 import { ISDK, SdkProvider } from './aws-auth';
 import { ToolkitInfo } from './toolkit-info';
@@ -219,8 +219,14 @@ export async function deployStack(options: DeployStackOptions): Promise<DeploySt
     ? templateParams.updateExisting(finalParameterValues, cloudFormationStack.parameters)
     : templateParams.supplyAll(finalParameterValues);
 
-  const skipDeployResult = await canSkipDeploy(options,
-    cloudFormationStack, stackParams.hasChanges(cloudFormationStack.parameters));
+  const skipDeployResult =
+    await canSkipDeploy(
+      options,
+      cloudFormationStack,
+      stackParams.hasChanges(cloudFormationStack.parameters),
+      options.shortcut,
+    );
+
   if (!skipDeployResult.hasChanges) {
     debug(`${deployName}: skipping deployment (use --force to override)`);
     return {
@@ -238,12 +244,62 @@ export async function deployStack(options: DeployStackOptions): Promise<DeploySt
 
     if (skipDeployResult.lambdaOnly) {
 
-      // SHORTCUT: Make an SDK call to directly deploy each modified Lambda function
-
       debug('SHORTCUT: This is a lambda-only change');
 
-      // TODO
       print('Directly updating modified Lambda functions, skipping CloudFormation deployment');
+
+      // Assets need to be published first, no sense in re-writing all of that code
+      await publishAssets(legacyAssets.toManifest(stackArtifact.assembly.directory), options.sdkProvider, stackEnv);
+
+      // TODO - The above should be constrained to only publish the changed Lambda functions
+
+      // Iterate over each changed Lambda function
+      for (const assetPath in skipDeployResult.modifiedAssetPaths) {
+        // Find the local copy of the asset
+        debug(`SHORTCUT: assetPath ${assetPath}`);
+
+        // Get the name of the bucket and the object key
+        let s3Bucket = '';
+        let s3Key = '';
+        const logicalFunctionName = skipDeployResult.modifiedAssetPaths[assetPath];
+
+        for (const [k, v] of Object.entries(stackParams.values)) {
+          debug(`SHORTCUT: Parameter key: ${k}, value: ${v}`);
+          if (k.indexOf(assetPath.replace('asset.', '')) > -1) {
+            debug('SHORTCUT: Match');
+
+            // SHORTCUT: Parameter
+            //   key: AssetParametersb1483be19c1ff89c56d116484a3a1fdc02f3ffd4c280d1c67ececfe422f00de0S3BucketB9B10393,
+            //   value: cdk-hnb659fds-assets-916662284357-us-east-1
+            // SHORTCUT: Match
+            // SHORTCUT: Parameter
+            //   key: AssetParametersb1483be19c1ff89c56d116484a3a1fdc02f3ffd4c280d1c67ececfe422f00de0S3VersionKey55DB915E,
+            //   value: assets/||b1483be19c1ff89c56d116484a3a1fdc02f3ffd4c280d1c67ececfe422f00de0.zip
+            // SHORTCUT: Match
+            // SHORTCUT: Parameter
+            //   key: AssetParametersb1483be19c1ff89c56d116484a3a1fdc02f3ffd4c280d1c67ececfe422f00de0ArtifactHash62D1C1D3,
+            //   value: b1483be19c1ff89c56d116484a3a1fdc02f3ffd4c280d1c67ececfe422f00de0
+            // SHORTCUT: Match
+
+            if (k.indexOf('S3Bucket') > -1) {
+              s3Bucket = v;
+            }
+
+            if (k.indexOf('S3VersionKey') > -1) {
+              s3Key = v.replace('||', '');
+            }
+          }
+
+        }
+
+        // Get the physical name of the function
+        const functionName = await getFunctionName(
+          logicalFunctionName, stackArtifact.stackName, stackEnv, options.sdkProvider);
+
+        // Update the lambda function code
+        await shortcutLambdaFunction(functionName!, s3Bucket, s3Key, stackEnv, options.sdkProvider);
+
+      }
 
       return {
         noOp: false,
@@ -432,9 +488,18 @@ export async function destroyStack(options: DestroyStackOptions) {
  *
  * Indicates if there are changes, and also specifies if those changes were
  * only to Lambda assets.
+ *
+ * hasChanges
+ * lambdaOnly
+ * modifiedAssetPaths - key: AssetPath value: LogicalFunctionId
  */
 export class SkipDeployResult {
-  constructor(public hasChanges: boolean, public lambdaOnly?: boolean) { }
+
+  constructor(
+    public hasChanges: boolean,
+    public lambdaOnly?: boolean,
+    public modifiedAssetPaths?: { [key: string]: string }) {
+  }
 }
 
 /**
@@ -461,6 +526,7 @@ function changeIsLambdaCode(change: cfnDiff.ResourceDifference): boolean {
   if (resourceType !== 'AWS::Lambda::Function') {
     return false;
   }
+
 
   // Make sure only the code in the Lambda function changed
   const propertyUpdates = change.propertyUpdates;
@@ -500,7 +566,8 @@ function changeIsLambdaCode(change: cfnDiff.ResourceDifference): boolean {
 async function canSkipDeploy(
   deployStackOptions: DeployStackOptions,
   cloudFormationStack: CloudFormationStack,
-  parameterChanges: boolean): Promise<SkipDeployResult> {
+  parameterChanges: boolean,
+  isShortcut?: boolean): Promise<SkipDeployResult> {
 
   const deployName = deployStackOptions.deployName || deployStackOptions.stack.stackName;
   debug(`${deployName}: checking if we can skip deploy`);
@@ -521,28 +588,47 @@ async function canSkipDeploy(
   const cfnStackTemplate = await cloudFormationStack.template();
   if (JSON.stringify(deployStackOptions.stack.template) !== JSON.stringify(cfnStackTemplate)) {
 
-    debug(`${deployName}: template has changed, about to check lambda shortcut`);
+    debug(`${deployName}: template has changed`);
 
-    // Check to see if the change is only to Lambda function code,
-    // in case the user specified `deploy --shortcut`
+    if (isShortcut) {
 
-    const differences: cfnDiff.TemplateDiff =
-      cfnDiff.diffTemplate(cfnStackTemplate, deployStackOptions.stack.template);
+      debug('SHORTCUT: About to check if only lambda functions changed');
 
-    let lambdaOnly = true;
+      // Check to see if the change is only to Lambda function code,
+      // in case the user specified `deploy --shortcut`
 
-    differences.resources.forEachDifference((logicalId: string, change: any) => {
+      const differences: cfnDiff.TemplateDiff =
+        cfnDiff.diffTemplate(cfnStackTemplate, deployStackOptions.stack.template);
 
-      // TODO - Remove this
-      debug(`SHORTCUT CHANGE ${logicalId}: ${JSON.stringify(change)}`);
+      let lambdaOnly = true;
+      const modifiedLambdaFunctions: { [key: string]: string } = {};
 
-      if (!changeIsLambdaCode(change)) {
-        lambdaOnly = false;
-      }
+      differences.resources.forEachDifference((logicalId: string, change: any) => {
 
-    });
+        // TODO - Remove this
+        debug(`SHORTCUT CHANGE ${logicalId}: ${JSON.stringify(change)}`);
 
-    return new SkipDeployResult(true, lambdaOnly);
+        if (!changeIsLambdaCode(change)) {
+          lambdaOnly = false;
+        } else {
+
+          // Get the asset path
+          const assetPath = change.newValue.Metadata['aws:asset:path'];
+
+          if (!assetPath) {
+            debug('SHORTCUT: Expected change.newValue.Metadata aws:asset:path');
+            lambdaOnly = false;
+          } else {
+            modifiedLambdaFunctions[assetPath] = logicalId;
+          }
+        }
+
+      });
+
+      return new SkipDeployResult(true, lambdaOnly, modifiedLambdaFunctions);
+    }
+
+    return new SkipDeployResult(true);
   }
 
   // Tags have changed

@@ -26,6 +26,51 @@ export async function publishAssets(manifest: cdk_assets.AssetManifest, sdk: Sdk
   }
 }
 
+/**
+ * Directly deploy a Lambda function using the SDK instead of CloudFormation.
+ *
+ */
+export async function shortcutLambdaFunction(
+  functioName: string,
+  s3Bucket: string,
+  s3Key: string,
+  targetEnv: cxapi.Environment,
+  sdk: SdkProvider) {
+
+  const aws = new PublishingAws(sdk, targetEnv);
+
+  // Call the Lambda SDK to update the function code
+  const lambdaParams = {
+    FunctionName: functioName,
+    Publish: true,
+    S3Bucket: s3Bucket,
+    S3Key: s3Key,
+  };
+  const lambda = await aws.lambdaClient({});
+  const lambdaResult = await lambda.updateFunctionCode(lambdaParams).promise();
+  debug(`SHORTCUT: lambda result: ${JSON.stringify(lambdaResult)}`);
+}
+
+export async function getFunctionName(
+  logicalFunctionName: string,
+  stackName: string,
+  targetEnv: cxapi.Environment,
+  sdk: SdkProvider) {
+
+  const cfnParams = {
+    LogicalResourceId: logicalFunctionName,
+    StackName: stackName,
+  };
+
+  const aws = new PublishingAws(sdk, targetEnv);
+
+  const cloudformation = await aws.cloudformationClient({});
+  const result = await cloudformation.describeStackResources(cfnParams).promise();
+  debug(`SHORTCUT: cloudformation result: ${JSON.stringify(result)}`);
+
+  return result.StackResources![0].PhysicalResourceId;
+}
+
 class PublishingAws implements cdk_assets.IAws {
   constructor(
     /**
@@ -57,6 +102,14 @@ class PublishingAws implements cdk_assets.IAws {
 
   public async ecrClient(options: cdk_assets.ClientOptions): Promise<AWS.ECR> {
     return (await this.sdk(options)).ecr();
+  }
+
+  public async lambdaClient(options: cdk_assets.ClientOptions): Promise<AWS.Lambda> {
+    return (await this.sdk(options)).lambda();
+  }
+
+  public async cloudformationClient(options: cdk_assets.ClientOptions): Promise<AWS.CloudFormation> {
+    return (await this.sdk(options)).cloudFormation();
   }
 
   /**

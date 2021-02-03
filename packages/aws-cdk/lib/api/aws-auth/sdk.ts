@@ -30,6 +30,7 @@ export interface ISDK {
   route53(): AWS.Route53;
   ecr(): AWS.ECR;
   elbv2(): AWS.ELBv2;
+  lambda(): AWS.Lambda;
 }
 
 /**
@@ -112,6 +113,10 @@ export class SDK implements ISDK {
 
   public elbv2(): AWS.ELBv2 {
     return this.wrapServiceErrorHandling(new AWS.ELBv2(this.config));
+  }
+
+  public lambda(): AWS.Lambda {
+    return this.wrapServiceErrorHandling(new AWS.Lambda(this.config));
   }
 
   public async currentAccount(): Promise<Account> {
@@ -204,7 +209,7 @@ export class SDK implements ISDK {
         // NOTE: This must be a function() and not an () => {
         // because I need 'this' to be dynamically bound and not statically bound.
         // If your linter complains don't listen to it!
-        return function(this: any) {
+        return function (this: any) {
           // Call the underlying function. If it returns an object with a promise()
           // method on it, wrap that 'promise' method.
           const args = [].slice.call(arguments, 0);
