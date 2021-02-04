@@ -267,8 +267,8 @@ export async function deployStack(options: DeployStackOptions): Promise<DeploySt
         debug(`SHORTCUT: assetPath ${assetPath}`);
 
         // Get the name of the bucket, object key, and function
-        let s3Bucket = '';
-        let s3Key = '';
+        let s3Bucket: string = '';
+        let s3Key: string = '';
         const logicalFunctionName = skipDeployResult.modifiedAssetPaths[assetPath];
 
         // Iterate over all stack parameters to find the ones related to this asset
@@ -293,6 +293,38 @@ export async function deployStack(options: DeployStackOptions): Promise<DeploySt
         // Get the physical name of the function
         const functionName = await getFunctionName(
           logicalFunctionName, stackArtifact.stackName, stackEnv, options.sdkProvider);
+
+        if (!s3Key || !s3Bucket) {
+          // Probably means we are on the new default synthesizer
+          // TODO - Find a more reliable way to detect that
+
+          const stackLambdas = Object.entries(stackArtifact.template.Resources || {})
+            .filter((resEntry: any) => resEntry[1].Type === 'AWS::Lambda::Function');
+
+          for (const stackLambda of stackLambdas) {
+
+            debug(`SHORTCUT: stackLambda ${JSON.stringify(stackLambda)}`);
+
+            if (stackLambda[0] == logicalFunctionName) {
+              const s3BucketResource = (stackLambda[1] as any).Properties.Code.S3Bucket;
+              // TODO - This might be a real name or:
+              // "S3Bucket": {
+              //   "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+              // },
+              if (typeof s3BucketResource === 'string') {
+                s3Bucket = s3BucketResource;
+              } else {
+                debug(`SHORTCUT: s3BucketResource: ${JSON.stringify(s3BucketResource)}`);
+                const sub = s3BucketResource['Fn::Sub'];
+                s3Bucket = sub.replace('${AWS::AccountId}', stackEnv.account);
+                s3Bucket = s3Bucket.replace('${AWS::Region}', stackEnv.region);
+
+                debug(`SHORTCUT: s3Bucket sub: ${s3Bucket}`);
+              }
+              s3Key = (stackLambda[1] as any).Properties.Code.S3Key;
+            }
+          }
+        }
 
         // Update the lambda function code
         await shortcutLambdaFunction(functionName!, s3Bucket, s3Key, stackEnv, options.sdkProvider);
